@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, MessageEntity, ParseMode
+from telegram import Update, MessageEntity
 from telegram.ext import (
     Updater, CommandHandler, MessageHandler, Filters,
     CallbackContext, ChatMemberHandler, ConversationHandler
@@ -7,7 +7,7 @@ from telegram.ext import (
 import sqlite3
 import os
 from threading import Lock
-from datetime import datetime, timedelta
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # Configuration
@@ -81,12 +81,8 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 # ====================== HELPER FUNCTIONS ======================
-def is_admin(update: Update):
-    user = update.effective_user
-    chat = update.effective_chat
-    if user and user.id == ADMIN_ID:  # Only you are admin
-        return True
-    return False
+def is_admin_user(user_id):
+    return user_id == ADMIN_ID
 
 def log_event(group_id, user_id, content, reason):
     execute_db("""INSERT INTO deleted_messages
@@ -111,29 +107,26 @@ def welcome_message(update: Update, context: CallbackContext):
         user_id = user.id
         join_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Welcome message with user details
+        # Welcome message with user details (NO MARKDOWN to avoid parsing errors)
         welcome_text = (
             f"👋 Welcome, {first_name} {last_name}!\n\n"
-            f"📝 **User Details:**\n"
+            f"📝 User Details:\n"
             f"• Username: @{username}\n"
-            f"• User ID: `{user_id}`\n"
+            f"• User ID: {user_id}\n"
             f"• Join Date: {join_date}\n\n"
-            "🤖 **Rules:**\n"
+            "🤖 Rules:\n"
             "1. 🚫 No spam or banned words.\n"
             "2. 🔗 No URLs allowed.\n"
             "3. 👀 Be respectful to others!"
         )
 
-        # Send the welcome message
-        welcome_msg = update.message.reply_text(
-            welcome_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        # Send the welcome message (without markdown)
+        welcome_msg = update.message.reply_text(welcome_text)
 
         # Delete the welcome message after 30 seconds
         context.job_queue.run_once(
-            delete_message,  # Function to delete the message
-            when=30,  # Delay in seconds
+            delete_message,
+            when=30,
             context={
                 "chat_id": chat.id,
                 "message_id": welcome_msg.message_id
@@ -153,31 +146,30 @@ def start(update: Update, context: CallbackContext):
     if chat.type == "private":
         start_message = (
             f"👋 Welcome, {first_name} {last_name}!\n\n"
-            f"📝 **User Details:**\n"
+            f"📝 User Details:\n"
             f"• Username: @{username}\n"
-            f"• User ID: `{user_id}`\n"
+            f"• User ID: {user_id}\n"
             f"• Join Date: {join_date}\n\n"
-            "🤖 **Bot Features:**\n"
+            "🤖 Bot Features:\n"
             "1. 🚫 Auto-delete URLs and banned words.\n"
             "2. 📊 Provide live group analytics.\n"
             "3. 📢 Broadcast messages to all groups.\n"
             "4. 👋 Greet new members with their details!"
         )
     else:
-        # Handle group messages
         start_message = (
             f"👋 Welcome, {first_name} {last_name}!\n\n"
-            f"📝 **User Details:**\n"
+            f"📝 User Details:\n"
             f"• Username: @{username}\n"
-            f"• User ID: `{user_id}`\n"
+            f"• User ID: {user_id}\n"
             f"• Join Date: {join_date}\n\n"
-            "🤖 **Bot Features:**\n"
+            "🤖 Bot Features:\n"
             "1. 🚫 Auto-delete URLs and banned words.\n"
             "2. 📊 Provide live group analytics.\n"
             "3. 📢 Broadcast messages to all groups.\n"
             "4. 👋 Greet new members with their details!"
         )
-    update.message.reply_text(start_message, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(start_message)
 
 # ====================== TRACK JOIN/LEAVE EVENTS ======================
 def track_join_leave(update: Update, context: CallbackContext):
@@ -229,7 +221,7 @@ def message_handler(update: Update, context: CallbackContext):
     url_deleted = False
     if message.entities:
         if any(entity.type == MessageEntity.URL for entity in message.entities):
-            if not is_admin(update):
+            if not is_admin_user(user.id):
                 # Delete the message
                 message.delete()
                 url_deleted = True
@@ -255,7 +247,7 @@ def message_handler(update: Update, context: CallbackContext):
                         }
                     )
                 except:
-                    pass  # If can't send warning, continue
+                    pass
                 
                 # Log the event and report to admin
                 log_event(chat.id, user.id, message.text or "URL in media", "URL")
@@ -275,7 +267,7 @@ def message_handler(update: Update, context: CallbackContext):
     if not url_deleted and message.text:
         text = message.text.lower()
         if any(word in text for word in banned_words):
-            if not is_admin(update):
+            if not is_admin_user(user.id):
                 # Delete the message
                 message.delete()
                 
@@ -300,7 +292,7 @@ def message_handler(update: Update, context: CallbackContext):
                         }
                     )
                 except:
-                    pass  # If can't send warning, continue
+                    pass
                 
                 # Log the event and report to admin
                 log_event(chat.id, user.id, message.text, "Banned word")
@@ -318,9 +310,8 @@ def message_handler(update: Update, context: CallbackContext):
 
 # ====================== STATS COMMAND ======================
 def stats_command(update: Update, context: CallbackContext):
-    if not is_admin(update):
-        update.message.reply_text("❌ This command is for admin only.")
-        return
+    # Available to ALL users
+    user = update.effective_user
     
     # Get accurate stats
     total_deleted = execute_db("SELECT COUNT(*) FROM deleted_messages")[0][0] or 0
@@ -333,18 +324,20 @@ def stats_command(update: Update, context: CallbackContext):
     breakdown = "\n".join([f"• {row[0]}: {row[1]}" for row in reason_stats]) if reason_stats else "• No deletions yet"
     
     stats_text = (
-        f"📊 **Live Stats**\n\n"
-        f"👥 **Groups:** {total_groups}\n"
-        f"👤 **Total Users:** {total_users}\n"
-        f"🗑️ **Total Deleted:** {total_deleted}\n\n"
-        f"**Breakdown:**\n{breakdown}"
+        f"📊 Live Stats\n\n"
+        f"👥 Groups: {total_groups}\n"
+        f"👤 Total Users: {total_users}\n"
+        f"🗑️ Total Deleted: {total_deleted}\n\n"
+        f"Breakdown:\n{breakdown}"
     )
     
-    update.message.reply_text(stats_text, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(stats_text)
 
 # ====================== RELOAD BANNED WORDS ======================
 def reload_banned_words(update: Update, context: CallbackContext):
-    if not is_admin(update):
+    # ADMIN ONLY
+    user = update.effective_user
+    if not is_admin_user(user.id):
         update.message.reply_text("❌ This command is for admin only.")
         return
     
@@ -356,20 +349,22 @@ def reload_banned_words(update: Update, context: CallbackContext):
 BROADCAST_TYPE, BROADCAST_MESSAGE, BROADCAST_CONFIRM = range(3)
 
 def broadcast(update: Update, context: CallbackContext):
-    if not is_admin(update):
+    # ADMIN ONLY
+    user = update.effective_user
+    if not is_admin_user(user.id):
         update.message.reply_text("❌ This command is for admin only.")
         return ConversationHandler.END
     
     # Show broadcast options
     options_text = (
-        "📢 **Broadcast Options:**\n\n"
-        "1. 🎯 **DM to all users** - Send to all users in private\n"
-        "2. 👥 **All groups** - Send to all groups\n"
-        "3. 📋 **Specific group** - Choose specific group\n\n"
+        "📢 Broadcast Options:\n\n"
+        "1. 🎯 DM to all users - Send to all users in private\n"
+        "2. 👥 All groups - Send to all groups\n"
+        "3. 📋 Specific group - Choose specific group\n\n"
         "Please reply with number (1, 2, or 3):"
     )
     
-    update.message.reply_text(options_text, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(options_text)
     return BROADCAST_TYPE
 
 def broadcast_type(update: Update, context: CallbackContext):
@@ -437,13 +432,13 @@ def broadcast_message(update: Update, context: CallbackContext):
     
     # Ask for confirmation
     confirm_text = (
-        f"📢 **Broadcast Confirmation**\n\n"
-        f"🎯 **Target:** {target_info}\n"
-        f"📝 **Message:** {update.message.text if update.message.text else 'Media file'}\n\n"
+        f"📢 Broadcast Confirmation\n\n"
+        f"🎯 Target: {target_info}\n"
+        f"📝 Message: {update.message.text if update.message.text else 'Media file'}\n\n"
         "Type 'confirm' to send or 'cancel' to abort:"
     )
     
-    update.message.reply_text(confirm_text, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(confirm_text)
     return BROADCAST_CONFIRM
 
 def broadcast_confirm(update: Update, context: CallbackContext):
@@ -500,12 +495,12 @@ def broadcast_confirm(update: Update, context: CallbackContext):
             fail_count = 1
     
     result_text = (
-        f"✅ **Broadcast Completed!**\n\n"
+        f"✅ Broadcast Completed!\n\n"
         f"✅ Success: {success_count}\n"
         f"❌ Failed: {fail_count}"
     )
     
-    update.message.reply_text(result_text, parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text(result_text)
     return ConversationHandler.END
 
 # ====================== DELETE MESSAGE FUNCTION ======================
@@ -515,10 +510,9 @@ def delete_message(context: CallbackContext):
     message_id = job.context["message_id"]
 
     try:
-        # Delete the message
         context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except:
-        pass  # Message might already be deleted
+        pass
 
 # ====================== ERROR HANDLER ======================
 def error_handler(update: Update, context: CallbackContext):
@@ -531,16 +525,15 @@ def main():
     
     # Handlers - available to all users
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("stats", stats_command))  # Available to all
     dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome_message))
     dp.add_handler(MessageHandler(Filters.all & ~Filters.command, message_handler))
     dp.add_handler(ChatMemberHandler(track_join_leave))
     
     # Admin-only handlers
-    dp.add_handler(CommandHandler("stats", stats_command))
-    dp.add_handler(CommandHandler("reload", reload_banned_words))
-    dp.add_error_handler(error_handler)
+    dp.add_handler(CommandHandler("reload", reload_banned_words))  # Admin only
     
-    # Enhanced broadcast conversation handler
+    # Enhanced broadcast conversation handler (Admin only)
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast)],
         states={
@@ -552,21 +545,20 @@ def main():
     )
     dp.add_handler(broadcast_handler)
     
+    dp.add_error_handler(error_handler)
+    
     updater.start_polling()
     updater.idle()
 
 if __name__ == "__main__":
-    main()
-from flask import Flask
-app = Flask(__name__)
+    # Add Flask for Render port binding
+    from flask import Flask
+    app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Bot is running!", 200
+    @app.route('/')
+    def home():
+        return "Bot is running!", 200
 
-if __name__ == '__main__':
     import threading
-    # Start Flask server in background
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False)).start()
-    # Start bot
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False), daemon=True).start()
     main()
