@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+group_stats.db
+.env
