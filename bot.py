@@ -10,6 +10,7 @@ import os
 from threading import Lock
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
+import requests
 
 # Configuration
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -278,9 +279,222 @@ def reload_banned_words(update: Update, context: CallbackContext):
 # ====================== ENHANCED BROADCAST FUNCTIONALITY ======================
 BROADCAST_TYPE, BROADCAST_MESSAGE, BROADCAST_CONFIRM = range(3)
 
-# (broadcast, broadcast_type, broadcast_message, broadcast_confirm functions unchanged from your original file)
-# paste your original implementations of broadcast, broadcast_type, broadcast_message, broadcast_confirm here
-# to avoid repetition in this snippet I assume they're unchanged and exist exactly as in your original file.
+def broadcast(update: Update, context: CallbackContext):
+    if not is_admin(update):
+        update.message.reply_text("❌ This command is for admin only.")
+        return ConversationHandler.END
+
+    # Show broadcast options
+    options_text = (
+        "📢 **Broadcast Options:**\n\n"
+        "1. 👤 **All Bot Users** - Send to all users who interacted with bot\n"
+        "2. 👥 **All Groups** - Send to all groups where bot is added\n"
+        "3. 🎯 **Specific Group** - Choose specific group from list\n\n"
+        "Please reply with number (1, 2, or 3):"
+    )
+
+    update.message.reply_text(options_text, parse_mode=ParseMode.MARKDOWN)
+    return BROADCAST_TYPE
+
+def broadcast_type(update: Update, context: CallbackContext):
+    choice = update.message.text.strip()
+
+    if choice == "1":
+        context.user_data["broadcast_type"] = "all_users"
+        users_count = execute_db("SELECT COUNT(DISTINCT user_id) FROM users")[0][0] or 0
+        broadcast_type_name = f"All Bot Users ({users_count} users)"
+
+    elif choice == "2":
+        context.user_data["broadcast_type"] = "all_groups"
+        groups_count = execute_db("SELECT COUNT(*) FROM groups")[0][0] or 0
+        broadcast_type_name = f"All Groups ({groups_count} groups)"
+
+    elif choice == "3":
+        context.user_data["broadcast_type"] = "specific_group"
+        # Show group list
+        groups = execute_db("SELECT group_id, group_name FROM groups")
+        if not groups:
+            update.message.reply_text("❌ No groups found in database.")
+            return ConversationHandler.END
+
+        group_list = "\n".join([f"{i+1}. {row[1]}" for i, row in enumerate(groups)])
+        update.message.reply_text(
+            f"📋 **Available Groups:**\n\n{group_list}\n\n"
+            "Please reply with group number:"
+        )
+        context.user_data["groups_list"] = groups
+        return BROADCAST_TYPE
+
+    else:
+        update.message.reply_text("❌ Invalid choice. Please enter 1, 2, or 3:")
+        return BROADCAST_TYPE
+
+    update.message.reply_text(
+        f"✅ Selected: {broadcast_type_name}\n\n"
+        "📝 Now please send the message you want to broadcast:\n"
+        "• Text message\n"
+        "• Photo with caption\n"
+        "• Document/file\n"
+        "• Or any media"
+    )
+    return BROADCAST_MESSAGE
+
+def broadcast_message(update: Update, context: CallbackContext):
+    # Store the message object (not just text)
+    context.user_data["broadcast_message"] = update.message
+
+    # Handle specific group selection
+    if context.user_data.get("broadcast_type") == "specific_group":
+        groups_list = context.user_data.get("groups_list", [])
+        try:
+            group_num = int(update.message.text) - 1
+            if 0 <= group_num < len(groups_list):
+                selected_group = groups_list[group_num]
+                context.user_data["selected_group"] = selected_group
+                target_info = f"Specific Group: {selected_group[1]}"
+            else:
+                update.message.reply_text("❌ Invalid group number. Please try again:")
+                return BROADCAST_TYPE
+        except ValueError:
+            update.message.reply_text("❌ Please enter a valid number:")
+            return BROADCAST_TYPE
+    else:
+        # For all_users or all_groups, use the actual message
+        broadcast_type = context.user_data.get("broadcast_type")
+        if broadcast_type == "all_users":
+            users_count = execute_db("SELECT COUNT(DISTINCT user_id) FROM users")[0][0] or 0
+            target_info = f"All Bot Users ({users_count} users)"
+        else:  # all_groups
+            groups_count = execute_db("SELECT COUNT(*) FROM groups")[0][0] or 0
+            target_info = f"All Groups ({groups_count} groups)"
+
+    # Get message preview
+    message_preview = ""
+    if update.message.text:
+        preview = update.message.text[:100] + "..." if len(update.message.text) > 100 else update.message.text
+        message_preview = f"Text: {preview}"
+    elif update.message.photo:
+        message_preview = "Photo with caption" if update.message.caption else "Photo"
+    elif update.message.document:
+        message_preview = f"Document: {update.message.document.file_name}"
+    else:
+        message_preview = "Media message"
+
+    # Ask for confirmation
+    confirm_text = (
+        f"📢 **Broadcast Confirmation**\n\n"
+        f"🎯 **Target:** {target_info}\n"
+        f"📝 **Message Type:** {message_preview}\n\n"
+        "Type 'confirm' to send or 'cancel' to abort:"
+    )
+
+    update.message.reply_text(confirm_text, parse_mode=ParseMode.MARKDOWN)
+    return BROADCAST_CONFIRM
+
+def broadcast_confirm(update: Update, context: CallbackContext):
+    if update.message.text.lower() != 'confirm':
+        update.message.reply_text("❌ Broadcast canceled.")
+        return ConversationHandler.END
+
+    # Send broadcast
+    broadcast_type = context.user_data.get("broadcast_type")
+    message = context.user_data.get("broadcast_message")
+
+    success_count = 0
+    fail_count = 0
+    failed_targets = []
+
+    if broadcast_type == "all_users":
+        users = execute_db("SELECT DISTINCT user_id FROM users")
+        total = len(users)
+
+        for user in users:
+            try:
+                if message.text:
+                    context.bot.send_message(chat_id=user[0], text=message.text)
+                elif message.photo:
+                    context.bot.send_photo(
+                        chat_id=user[0], 
+                        photo=message.photo[-1].file_id,
+                        caption=message.caption
+                    )
+                elif message.document:
+                    context.bot.send_document(
+                        chat_id=user[0], 
+                        document=message.document.file_id,
+                        caption=message.caption
+                    )
+                success_count += 1
+            except Exception as e:
+                fail_count += 1
+                failed_targets.append(f"User {user[0]}")
+
+    elif broadcast_type == "all_groups":
+        groups = execute_db("SELECT group_id, group_name FROM groups")
+        total = len(groups)
+
+        for group in groups:
+            try:
+                if message.text:
+                    context.bot.send_message(chat_id=group[0], text=message.text)
+                elif message.photo:
+                    context.bot.send_photo(
+                        chat_id=group[0], 
+                        photo=message.photo[-1].file_id,
+                        caption=message.caption
+                    )
+                elif message.document:
+                    context.bot.send_document(
+                        chat_id=group[0], 
+                        document=message.document.file_id,
+                        caption=message.caption
+                    )
+                success_count += 1
+            except Exception as e:
+                fail_count += 1
+                failed_targets.append(group[1])
+
+    elif broadcast_type == "specific_group":
+        group = context.user_data.get("selected_group")
+        total = 1
+
+        try:
+            if message.text:
+                context.bot.send_message(chat_id=group[0], text=message.text)
+            elif message.photo:
+                context.bot.send_photo(
+                    chat_id=group[0], 
+                    photo=message.photo[-1].file_id,
+                    caption=message.caption
+                )
+            elif message.document:
+                context.bot.send_document(
+                    chat_id=group[0], 
+                    document=message.document.file_id,
+                    caption=message.caption
+                )
+            success_count = 1
+        except Exception as e:
+            fail_count = 1
+            failed_targets.append(group[1])
+
+    # Send detailed report
+    result_text = (
+        f"✅ **Broadcast Completed!**\n\n"
+        f"📊 **Results:**\n"
+        f"• ✅ Successfully sent: {success_count}\n"
+        f"• ❌ Failed: {fail_count}\n"
+        f"• 📈 Success rate: {(success_count/total)*100:.1f}%\n\n"
+    )
+
+    if failed_targets:
+        failed_list = "\n".join(failed_targets[:10])  # Show first 10 failures
+        if len(failed_targets) > 10:
+            failed_list += f"\n... and {len(failed_targets) - 10} more"
+        result_text += f"❌ **Failed to send to:**\n{failed_list}"
+
+    update.message.reply_text(result_text, parse_mode=ParseMode.MARKDOWN)
+    return ConversationHandler.END
 
 # ====================== DELETE MESSAGE FUNCTION ======================
 def delete_message(context: CallbackContext):
@@ -315,7 +529,8 @@ def main():
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast)],
         states={
-            BROADCAST_MESSAGE: [MessageHandler(Filters.text & ~Filters.command, broadcast_message)],
+            BROADCAST_TYPE: [MessageHandler(Filters.text & ~Filters.command, broadcast_type)],
+            BROADCAST_MESSAGE: [MessageHandler(Filters.all & ~Filters.command, broadcast_message)],
             BROADCAST_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, broadcast_confirm)],
         },
         fallbacks=[]
