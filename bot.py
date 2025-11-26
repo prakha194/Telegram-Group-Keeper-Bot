@@ -1,8 +1,8 @@
 import logging
-from telegram import Update, MessageEntity, ParseMode
+from telegram import Update
 from telegram.ext import (
-    Updater, CommandHandler, MessageHandler, Filters,
-    CallbackContext, ChatMemberHandler, ConversationHandler
+    Application, CommandHandler, MessageHandler, filters,
+    ContextTypes, ChatMemberHandler, ConversationHandler
 )
 import sqlite3
 import os
@@ -90,14 +90,14 @@ def log_event(group_id, user_id, content, reason):
               VALUES (?, ?, ?, ?)""",
               (group_id, user_id, content, reason))
 
-def send_to_admin(context, message):
+async def send_to_admin(context, message):
     try:
-        context.bot.send_message(chat_id=ADMIN_ID, text=message)
+        await context.bot.send_message(chat_id=ADMIN_ID, text=message)
     except Exception as e:
         logger.error(f"Failed to send to admin: {e}")
 
 # ====================== WELCOME MESSAGE FUNCTIONALITY ======================
-def welcome_message(update: Update, context: CallbackContext):
+async def welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for user in update.message.new_chat_members:
         chat = update.effective_chat
         username = user.username or "No Username"
@@ -118,19 +118,19 @@ def welcome_message(update: Update, context: CallbackContext):
             "3. 👀 Be respectful to others!"
         )
 
-        welcome_msg = update.message.reply_text(welcome_text)
+        welcome_msg = await update.message.reply_text(welcome_text)
 
         context.job_queue.run_once(
             delete_message,
             when=30,
-            context={
+            data={
                 "chat_id": chat.id,
                 "message_id": welcome_msg.message_id
             }
         )
 
 # ====================== START COMMAND ======================
-def start(update: Update, context: CallbackContext):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     username = user.username or "No Username"
@@ -151,30 +151,10 @@ def start(update: Update, context: CallbackContext):
         "3. 📢 Broadcast messages to all groups.\n"
         "4. 👋 Greet new members with their details!"
     )
-    update.message.reply_text(start_message)
-
-# ====================== TRACK JOIN/LEAVE EVENTS ======================
-def track_join_leave(update: Update, context: CallbackContext):
-    event = update.chat_member
-    if not event or not event.chat:
-        return
-
-    group_id = event.chat.id
-    user_id = event.new_chat_member.user.id
-    username = event.new_chat_member.user.username or "Unknown"
-    
-    action = "join" if event.new_chat_member.status == "member" else "leave"
-    
-    execute_db("""INSERT INTO join_leave_events
-              (group_id, user_id, action)
-              VALUES (?, ?, ?)""",
-              (group_id, user_id, action))
-    
-    msg = f"👤 {username} {action}ed group {event.chat.title}"
-    context.bot.send_message(chat_id=ADMIN_ID, text=msg)
+    await update.message.reply_text(start_message)
 
 # ====================== MESSAGE HANDLER ======================
-def message_handler(update: Update, context: CallbackContext):
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if not message or not message.chat:
         return
@@ -197,9 +177,9 @@ def message_handler(update: Update, context: CallbackContext):
     # Check for URLs
     url_deleted = False
     if message.entities:
-        if any(entity.type == MessageEntity.URL for entity in message.entities):
+        if any(entity.type == "url" for entity in message.entities):
             if not is_admin_user(user.id):
-                message.delete()
+                await message.delete()
                 url_deleted = True
                 
                 warning_text = (
@@ -207,7 +187,7 @@ def message_handler(update: Update, context: CallbackContext):
                     "Please refrain from sharing links. Thank you! 😊"
                 )
                 try:
-                    warning_msg = context.bot.send_message(
+                    warning_msg = await context.bot.send_message(
                         chat_id=chat.id,
                         text=warning_text
                     )
@@ -215,7 +195,7 @@ def message_handler(update: Update, context: CallbackContext):
                     context.job_queue.run_once(
                         delete_message,
                         when=30,
-                        context={
+                        data={
                             "chat_id": chat.id,
                             "message_id": warning_msg.message_id
                         }
@@ -233,21 +213,21 @@ def message_handler(update: Update, context: CallbackContext):
                     f"📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"📝 Content:\n{message.text or 'URL in media'}"
                 )
-                send_to_admin(context, admin_report)
+                await send_to_admin(context, admin_report)
     
     # Check banned words
     if not url_deleted and message.text:
         text = message.text.lower()
         if any(word in text for word in banned_words):
             if not is_admin_user(user.id):
-                message.delete()
+                await message.delete()
                 
                 warning_text = (
                     f"⚠️ Hi {user.first_name}, the message contained a banned word. "
                     "Please be mindful of the group rules. Thank you! 😊"
                 )
                 try:
-                    warning_msg = context.bot.send_message(
+                    warning_msg = await context.bot.send_message(
                         chat_id=chat.id,
                         text=warning_text
                     )
@@ -255,7 +235,7 @@ def message_handler(update: Update, context: CallbackContext):
                     context.job_queue.run_once(
                         delete_message,
                         when=30,
-                        context={
+                        data={
                             "chat_id": chat.id,
                             "message_id": warning_msg.message_id
                         }
@@ -273,11 +253,10 @@ def message_handler(update: Update, context: CallbackContext):
                     f"📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                     f"📝 Content:\n{message.text}"
                 )
-                send_to_admin(context, admin_report)
+                await send_to_admin(context, admin_report)
 
 # ====================== STATS COMMAND ======================
-def stats_command(update: Update, context: CallbackContext):
-    # Available to ALL users
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_deleted = execute_db("SELECT COUNT(*) FROM deleted_messages")[0][0] or 0
     total_groups = execute_db("SELECT COUNT(*) FROM groups")[0][0] or 0
     total_users = execute_db("SELECT COUNT(DISTINCT user_id) FROM users")[0][0] or 0
@@ -294,126 +273,47 @@ def stats_command(update: Update, context: CallbackContext):
         f"Breakdown:\n{breakdown}"
     )
     
-    update.message.reply_text(stats_text)
+    await update.message.reply_text(stats_text)
 
 # ====================== RELOAD BANNED WORDS ======================
-def reload_banned_words(update: Update, context: CallbackContext):
-    # ADMIN ONLY
+async def reload_banned_words(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_admin_user(user.id):
-        update.message.reply_text("❌ This command is for admin only.")
+        await update.message.reply_text("❌ This command is for admin only.")
         return
     
     global banned_words
     banned_words = load_banned_words()
-    update.message.reply_text(f"✅ Banned words reloaded! Loaded {len(banned_words)} words.")
-
-# ====================== BROADCAST FUNCTIONALITY ======================
-BROADCAST_MESSAGE, BROADCAST_TIME, BROADCAST_CONFIRM = range(3)
-
-def broadcast(update: Update, context: CallbackContext):
-    # ADMIN ONLY
-    user = update.effective_user
-    if not is_admin_user(user.id):
-        update.message.reply_text("❌ This command is for admin only.")
-        return ConversationHandler.END
-    
-    update.message.reply_text("📢 Please enter the message you want to broadcast:")
-    return BROADCAST_MESSAGE
-
-def broadcast_message(update: Update, context: CallbackContext):
-    context.user_data["broadcast_message"] = update.message.text
-    update.message.reply_text("🕒 Please enter the date and time for the broadcast (format: YYYY-MM-DD HH:MM):")
-    return BROADCAST_TIME
-
-def broadcast_time(update: Update, context: CallbackContext):
-    try:
-        broadcast_time = datetime.strptime(update.message.text, "%Y-%m-%d %H:%M")
-        context.user_data["broadcast_time"] = broadcast_time
-        groups = execute_db("SELECT group_id, group_name FROM groups")
-        group_list = "\n".join([f"{row[0]} - {row[1]}" for row in groups])
-        update.message.reply_text(
-            f"📋 Groups/Channels:\n{group_list}\n\n"
-            "Please confirm the broadcast by typing 'confirm' or cancel by typing 'cancel'."
-        )
-        return BROADCAST_CONFIRM
-    except ValueError:
-        update.message.reply_text("❌ Invalid date format. Please use YYYY-MM-DD HH:MM.")
-        return BROADCAST_TIME
-
-def broadcast_confirm(update: Update, context: CallbackContext):
-    if update.message.text.lower() == "confirm":
-        broadcast_time = context.user_data["broadcast_time"]
-        broadcast_message = context.user_data["broadcast_message"]
-        groups = execute_db("SELECT group_id FROM groups")
-        
-        scheduler.add_job(
-            send_broadcast,
-            "date",
-            run_date=broadcast_time,
-            args=[context, broadcast_message, groups]
-        )
-        
-        update.message.reply_text(
-            f"✅ Broadcast scheduled for {broadcast_time.strftime('%Y-%m-%d %H:%M')}."
-        )
-    else:
-        update.message.reply_text("❌ Broadcast canceled.")
-    return ConversationHandler.END
-
-def send_broadcast(context: CallbackContext, message, groups):
-    for group in groups:
-        try:
-            context.bot.send_message(chat_id=group[0], text=message)
-        except Exception as e:
-            logger.error(f"Failed to send to group {group[0]}: {e}")
+    await update.message.reply_text(f"✅ Banned words reloaded! Loaded {len(banned_words)} words.")
 
 # ====================== DELETE MESSAGE FUNCTION ======================
-def delete_message(context: CallbackContext):
+async def delete_message(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
-    chat_id = job.context["chat_id"]
-    message_id = job.context["message_id"]
+    chat_id = job.data["chat_id"]
+    message_id = job.data["message_id"]
 
     try:
-        context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except:
         pass
 
 # ====================== ERROR HANDLER ======================
-def error_handler(update: Update, context: CallbackContext):
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
 
 # ====================== MAIN ======================
 def main():
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
+    application = Application.builder().token(TOKEN).build()
     
-    # Handlers - available to all users
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("stats", stats_command))
-    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome_message))
-    dp.add_handler(MessageHandler(Filters.all & ~Filters.command, message_handler))
-    dp.add_handler(ChatMemberHandler(track_join_leave))
+    # Handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("reload", reload_banned_words))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_message))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
+    application.add_error_handler(error_handler)
     
-    # Admin-only handlers
-    dp.add_handler(CommandHandler("reload", reload_banned_words))
-    
-    # Broadcast conversation handler
-    broadcast_handler = ConversationHandler(
-        entry_points=[CommandHandler("broadcast", broadcast)],
-        states={
-            BROADCAST_MESSAGE: [MessageHandler(Filters.text & ~Filters.command, broadcast_message)],
-            BROADCAST_TIME: [MessageHandler(Filters.text & ~Filters.command, broadcast_time)],
-            BROADCAST_CONFIRM: [MessageHandler(Filters.text & ~Filters.command, broadcast_confirm)],
-        },
-        fallbacks=[]
-    )
-    dp.add_handler(broadcast_handler)
-    
-    dp.add_error_handler(error_handler)
-    
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == "__main__":
     # Add Flask for Render
