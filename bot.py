@@ -533,16 +533,13 @@ def main():
     updater = Updater(TOKEN)
     dp = updater.dispatcher
 
-    # Handlers
+    # Handlers that should run before the generic message handler
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("stats", stats_command))
     dp.add_handler(CommandHandler("reload", reload_banned_words))
-    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome_message))
-    dp.add_handler(MessageHandler(Filters.all & ~Filters.command, message_handler))
     dp.add_handler(ChatMemberHandler(track_join_leave))
-    dp.add_error_handler(error_handler)
 
-    # Broadcast conversation handler
+    # Broadcast conversation handler - must be added BEFORE the generic catch-all handler
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast)],
         states={
@@ -553,6 +550,14 @@ def main():
         fallbacks=[]
     )
     dp.add_handler(broadcast_handler)
+
+    # Welcome/new members handler
+    dp.add_handler(MessageHandler(Filters.status_update.new_chat_members, welcome_message))
+
+    # Generic message handler (catch-all) must be last so conversations can work
+    dp.add_handler(MessageHandler(Filters.all & ~Filters.command, message_handler))
+
+    dp.add_error_handler(error_handler)
 
     updater.start_polling()
     updater.idle()
