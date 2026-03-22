@@ -1,5 +1,7 @@
 # Telegram-Group-Keeper-Bot
 ## if u add this bot to your group in telegram than automatically it will filter the spam links and banned words you set in banned words file
+#welcome the new members 
+etc etc
 
 Telegram group moderation bot.
 Run: set TELEGRAM_TOKEN and ADMIN_ID env vars and `python bot.py`.
